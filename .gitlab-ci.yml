@@ -1,0 +1,142 @@
+variables:
+  AWS_REGION: some-region
+  DJANGO_REPOSITORY_URL: www.repo.com/django-django-app
+  NGINX_REPOSITORY_URL: www.repo.com/nginx-django-app
+  REDIS_REPOSITORY_URL: www.repo.com/redis-django-app
+  NGINX_IMAGE_NAME: nginx-django-app
+  DJANGO_IMAGE_NAME: django-django-app
+  REDIS_IMAGE_NAME: redis-django-app
+  NGINX_DOCKERFILE_PATH: nginx/
+  REDIS_DOCKERFILE_PATH: redis/
+  DJANGO_DOCKERFILE_PATH: ./
+  DJANGO_CONTAINER_NAME: django
+  NGINX_CONTAINER_NAME: nginx
+  REDIS_CONTAINER_NAME: redis
+  TASKS_COUNT: 1
+
+stages:
+  - build
+  - deploy-redis
+  - deploy-django
+  - deploy-nginx
+
+build_nginx:
+  image: docker:latest
+  stage: build
+  services:
+    - docker:dind
+  before_script:
+    - apk add --no-cache curl jq python py-pip
+    - pip install awscli
+  script:
+    - $(aws ecr get-login --no-include-email --region $AWS_REGION)
+    - docker build
+      -t $NGINX_IMAGE_NAME 
+      $NGINX_DOCKERFILE_PATH
+    - docker tag $NGINX_IMAGE_NAME:latest $NGINX_REPOSITORY_URL
+    - docker push $NGINX_REPOSITORY_URL:latest
+  only:
+    - developer
+
+build_django:
+  image: docker:latest
+  stage: build
+  services:
+    - docker:dind
+  before_script:
+    - apk add --no-cache curl jq python py-pip
+    - pip install awscli
+  script:
+    - $(aws ecr get-login --no-include-email --region $AWS_REGION)
+    - docker build
+      -t $DJANGO_IMAGE_NAME
+      $DJANGO_DOCKERFILE_PATH
+    - docker tag $DJANGO_IMAGE_NAME:latest $DJANGO_REPOSITORY_URL
+    - docker push $DJANGO_REPOSITORY_URL:latest
+  only:
+    - developer
+
+build_redis:
+  image: docker:latest
+  stage: build
+  services:
+    - docker:dind
+  before_script:
+    - apk add --no-cache curl jq python py-pip
+    - pip install awscli
+  script:
+    - $(aws ecr get-login --no-include-email --region $AWS_REGION)
+    - docker build
+      -t $REDIS_IMAGE_NAME
+      $REDIS_DOCKERFILE_PATH
+    - docker tag $REDIS_IMAGE_NAME:latest $REDIS_REPOSITORY_URL
+    - docker push $REDIS_REPOSITORY_URL:latest
+  only:
+    - developer
+    
+deploy_redis:
+  image: python:latest
+  stage: deploy-redis
+  before_script:
+    - pip install ecs-deploy
+  script:
+    - ecs deploy --region ${AWS_REGION} $ECS_CLUSTER_NAME $REDIS_SERVICE_NAME
+      -i $REDIS_CONTAINER_NAME $REDIS_REPOSITORY_URL
+      --timeout 600
+    - ecs scale --region ${AWS_REGION} --timeout 600 $ECS_CLUSTER_NAME $REDIS_SERVICE_NAME $TASKS_COUNT
+  only:
+    - developer
+
+deploy_django_statics:
+  image: python:latest
+  stage: deploy-django
+  script:
+    - pip install -r requirements.txt
+    - python apidjango-app/manage.py collectstatic --no-input
+  only:
+    - developer
+
+deploy_django:
+  image: python:latest
+  stage: deploy-django
+  before_script:
+    - pip install ecs-deploy
+  script:
+    - ecs deploy --region ${AWS_REGION} $ECS_CLUSTER_NAME $ECS_SERVICE_NAME
+      -i $DJANGO_CONTAINER_NAME $DJANGO_REPOSITORY_URL
+      -e $DJANGO_CONTAINER_NAME FRONTEND_django-app_HOST $FRONTEND_django-app_HOST
+      -e $DJANGO_CONTAINER_NAME DB_django-app_HOST $DB_django-app_HOST
+      -e $DJANGO_CONTAINER_NAME DB_django-app_PORT $DB_django-app_PORT
+      -e $DJANGO_CONTAINER_NAME DB_django-app_USERNAME $DB_django-app_USERNAME
+      -e $DJANGO_CONTAINER_NAME DB_django-app_PASSWORD $DB_django-app_PASSWORD
+      -e $DJANGO_CONTAINER_NAME DB_django-app_NAME $DB_django-app_NAME
+      -e $DJANGO_CONTAINER_NAME EMAIL_HOST $EMAIL_HOST
+      -e $DJANGO_CONTAINER_NAME EMAIL_HOST_USER $EMAIL_HOST_USER
+      -e $DJANGO_CONTAINER_NAME EMAIL_HOST_PASSWORD $EMAIL_HOST_PASSWORD
+      -e $DJANGO_CONTAINER_NAME EMAIL_PORT $EMAIL_PORT
+      -e $DJANGO_CONTAINER_NAME django-app_SECRET_KEY $django-app_SECRET_KEY
+      -e $DJANGO_CONTAINER_NAME AWS_ACCESS_KEY_ID $AWS_ACCESS_KEY_ID
+      -e $DJANGO_CONTAINER_NAME AWS_SECRET_ACCESS_KEY $AWS_SECRET_ACCESS_KEY
+      -e $DJANGO_CONTAINER_NAME DJANGO_SETTINGS_MODULE $DJANGO_SETTINGS_MODULE
+      -e $DJANGO_CONTAINER_NAME SENDGRID_API_KEY $SENDGRID_API_KEY
+      -e $DJANGO_CONTAINER_NAME REDIS_HOST $REDIS_HOST
+      --timeout 600
+    - ecs scale --region ${AWS_REGION} --timeout 600 $ECS_CLUSTER_NAME $ECS_SERVICE_NAME $TASKS_COUNT
+  only:
+    - developer
+
+deploy_nginx:
+  image: python:latest
+  stage: deploy-nginx
+  before_script:
+    - pip install ecs-deploy
+  script:
+    - ecs deploy --region ${AWS_REGION} $ECS_CLUSTER_NAME $NGINX_SERVICE_NAME
+      -i $NGINX_CONTAINER_NAME $NGINX_REPOSITORY_URL
+      -e $NGINX_CONTAINER_NAME LISTEN_PORT $LISTEN_PORT
+      -e $NGINX_CONTAINER_NAME SERVER_NAME $SERVER_NAME
+      -e $NGINX_CONTAINER_NAME PROXY_PASS $PROXY_PASS
+      --timeout 600
+    - ecs scale --region ${AWS_REGION} --timeout 600 $ECS_CLUSTER_NAME $NGINX_SERVICE_NAME $TASKS_COUNT
+  only:
+    - developer
